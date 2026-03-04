@@ -1,0 +1,2 @@
+# False positive: jwtop is a JWT operations tool and JWTs appear in test workflows
+jwt-token
