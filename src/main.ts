@@ -1,4 +1,5 @@
 import * as core from '@actions/core'
+import * as github from '@actions/github'
 import { wait } from './wait.js'
 
 /**
@@ -18,8 +19,26 @@ export async function run(): Promise<void> {
     await wait(parseInt(ms, 10))
     core.debug(new Date().toTimeString())
 
+    const time = new Date().toTimeString()
+
     // Set outputs for other workflow steps to use
-    core.setOutput('time', new Date().toTimeString())
+    core.setOutput('time', time)
+
+    // Post a comment on the PR if running in a pull request context
+    const pr = github.context.payload.pull_request
+    if (pr) {
+      const token = core.getInput('github-token')
+      if (token) {
+        const octokit = github.getOctokit(token)
+        const { owner, repo } = github.context.repo
+        await octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: pr.number,
+          body: `Action completed at ${time}`
+        })
+      }
+    }
   } catch (error) {
     // Fail the workflow run if an error occurs
     if (error instanceof Error) core.setFailed(error.message)
