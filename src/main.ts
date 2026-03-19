@@ -1,27 +1,64 @@
-import * as core from '@actions/core'
-import { wait } from './wait.js'
+import {
+  addPath,
+  debug,
+  getInput,
+  info,
+  setFailed,
+  setOutput
+} from '@actions/core'
+import { exec, ExecOptions } from '@actions/exec'
 
-/**
- * The main function for the action.
- *
- * @returns Resolves when the action is complete.
- */
+import { installVersion } from './installer.js'
+
+function parseArgs(args: string): string[] {
+  if (!args.trim()) return []
+  return args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
+}
+
 export async function run(): Promise<void> {
   try {
-    const ms: string = core.getInput('milliseconds')
+    const version = getInput('version')
+    const command = getInput('command')
+    const args = getInput('args')
 
-    // Debug logs are only output if the `ACTIONS_STEP_DEBUG` secret is true
-    core.debug(`Waiting ${ms} milliseconds ...`)
+    info(`Setup jwtop version ${version}`)
 
-    // Log the current timestamp, wait, then log the new timestamp
-    core.debug(new Date().toTimeString())
-    await wait(parseInt(ms, 10))
-    core.debug(new Date().toTimeString())
+    const installDir = await installVersion(version)
+    info(`jwtop has been installed to ${installDir}`)
 
-    // Set outputs for other workflow steps to use
-    core.setOutput('time', new Date().toTimeString())
+    addPath(installDir)
+    setOutput('jwtop-path', installDir)
+    info('jwtop has been added to the PATH')
+
+    if (command) {
+      const telemetry = getInput('telemetry')
+      const extraArgs: string[] = []
+      if (telemetry === 'false' || telemetry === '0') {
+        extraArgs.push('--sqa-opt-out')
+      }
+
+      let output = ''
+      const execOptions: ExecOptions = {
+        listeners: {
+          stdout: (data: Buffer) => {
+            output += data.toString()
+          }
+        }
+      }
+
+      debug(`Running jwtop ${command} with args: ${args}`)
+      await exec(
+        'jwtop',
+        [command, ...parseArgs(args), ...extraArgs],
+        execOptions
+      )
+      setOutput('output', output.trim())
+    }
   } catch (error) {
-    // Fail the workflow run if an error occurs
-    if (error instanceof Error) core.setFailed(error.message)
+    if (error instanceof Error) {
+      return setFailed(error.message)
+    }
+
+    setFailed('An unknown error occurred')
   }
 }

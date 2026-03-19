@@ -1,62 +1,115 @@
 /**
  * Unit tests for the action's main functionality, src/main.ts
- *
- * To mock dependencies in ESM, you can create fixtures that export mock
- * functions and objects. For example, the core module is mocked in this test,
- * so that the actual '@actions/core' module is not imported.
  */
 import { jest } from '@jest/globals'
 import * as core from '../__fixtures__/core.js'
-import { wait } from '../__fixtures__/wait.js'
+import * as execModule from '../__fixtures__/exec.js'
+import * as installer from '../__fixtures__/installer.js'
 
-// Mocks should be declared before the module being tested is imported.
 jest.unstable_mockModule('@actions/core', () => core)
-jest.unstable_mockModule('../src/wait.js', () => ({ wait }))
+jest.unstable_mockModule('@actions/exec', () => execModule)
+jest.unstable_mockModule('../src/installer.js', () => installer)
 
-// The module being tested should be imported dynamically. This ensures that the
-// mocks are used in place of any actual dependencies.
 const { run } = await import('../src/main.js')
+
+const INSTALL_DIR = '/opt/hostedtoolcache/jwtop/v0.2.0/x64'
 
 describe('main.ts', () => {
   beforeEach(() => {
-    // Set the action's inputs as return values from core.getInput().
-    core.getInput.mockImplementation(() => '500')
+    jest.resetAllMocks()
 
-    // Mock the wait function so that it does not actually wait.
-    wait.mockImplementation(() => Promise.resolve('done!'))
+    core.getInput.mockImplementation((name: string) => {
+      if (name === 'version') return 'latest'
+      return ''
+    })
+
+    installer.installVersion.mockResolvedValue(INSTALL_DIR)
+    execModule.exec.mockResolvedValue(0)
   })
 
   afterEach(() => {
     jest.resetAllMocks()
   })
 
-  it('Sets the time output', async () => {
+  it('installs jwtop and adds it to the PATH', async () => {
     await run()
 
-    // Verify the time output was set.
-    expect(core.setOutput).toHaveBeenNthCalledWith(
-      1,
-      'time',
-      // Simple regex to match a time string in the format HH:MM:SS.
-      expect.stringMatching(/^\d{2}:\d{2}:\d{2}/)
+    expect(installer.installVersion).toHaveBeenCalledWith('latest')
+    expect(core.addPath).toHaveBeenCalledWith(INSTALL_DIR)
+    expect(core.setOutput).toHaveBeenCalledWith('jwtop-path', INSTALL_DIR)
+  })
+
+  it('does not execute jwtop when command input is empty', async () => {
+    await run()
+
+    expect(execModule.exec).not.toHaveBeenCalled()
+    expect(core.setOutput).not.toHaveBeenCalledWith('output', expect.anything())
+  })
+
+  it('runs command with args when both are provided', async () => {
+    core.getInput.mockImplementation((name: string) => {
+      if (name === 'version') return 'v0.2.0'
+      if (name === 'command') return 'decode'
+      if (name === 'args') return 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig'
+      return ''
+    })
+
+    await run()
+
+    expect(execModule.exec).toHaveBeenCalledWith(
+      'jwtop',
+      ['decode', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig'],
+      expect.objectContaining({ listeners: expect.any(Object) })
     )
   })
 
-  it('Sets a failed status', async () => {
-    // Clear the getInput mock and return an invalid value.
-    core.getInput.mockClear().mockReturnValueOnce('this is not a number')
-
-    // Clear the wait mock and return a rejected promise.
-    wait
-      .mockClear()
-      .mockRejectedValueOnce(new Error('milliseconds is not a number'))
+  it('splits multiple args correctly', async () => {
+    core.getInput.mockImplementation((name: string) => {
+      if (name === 'version') return 'v0.2.0'
+      if (name === 'command') return 'crack'
+      if (name === 'args')
+        return '--url https://api.example.com/auth --wordlist ./words.txt'
+      return ''
+    })
 
     await run()
 
-    // Verify that the action was marked as failed.
-    expect(core.setFailed).toHaveBeenNthCalledWith(
-      1,
-      'milliseconds is not a number'
+    expect(execModule.exec).toHaveBeenCalledWith(
+      'jwtop',
+      [
+        'crack',
+        '--url',
+        'https://api.example.com/auth',
+        '--wordlist',
+        './words.txt'
+      ],
+      expect.objectContaining({ listeners: expect.any(Object) })
     )
+  })
+
+  it('appends --sqa-opt-out when telemetry is disabled', async () => {
+    core.getInput.mockImplementation((name: string) => {
+      if (name === 'version') return 'v0.2.0'
+      if (name === 'command') return 'decode'
+      if (name === 'args') return 'eyJhbGciOiJIUzI1NiJ9.test'
+      if (name === 'telemetry') return 'false'
+      return ''
+    })
+
+    await run()
+
+    expect(execModule.exec).toHaveBeenCalledWith(
+      'jwtop',
+      ['decode', 'eyJhbGciOiJIUzI1NiJ9.test', '--sqa-opt-out'],
+      expect.objectContaining({ listeners: expect.any(Object) })
+    )
+  })
+
+  it('calls setFailed when installVersion throws', async () => {
+    installer.installVersion.mockRejectedValue(new Error('download failed'))
+
+    await run()
+
+    expect(core.setFailed).toHaveBeenCalledWith('download failed')
   })
 })

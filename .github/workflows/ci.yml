@@ -17,32 +17,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        id: checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        id: setup-node
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-
-      - name: Install Dependencies
-        id: npm-ci
-        run: npm ci
-
-      - name: Check Format
-        id: npm-format-check
-        run: npm run format:check
-
-      - name: Lint
-        id: npm-lint
-        run: npm run lint
-
-      - name: Test
-        id: npm-ci-test
-        run: npm run ci-test
+      - name: Build and Test
+        uses: cerberauth/ci/actions/node-build-test@main
 
   test-action:
     name: GitHub Actions Test
@@ -53,12 +29,24 @@ jobs:
         id: checkout
         uses: actions/checkout@v6
 
-      - name: Test Local Action
-        id: test-action
+      - name: Install jwtop (install only)
+        id: test-install
         uses: ./
         with:
-          milliseconds: 2000
+          version: latest
 
-      - name: Print Output
+      - name: Verify jwtop is on PATH
+        id: verify
+        run: jwtop --help
+
+      - name: Decode a JWT
+        id: test-decode
+        uses: ./
+        with:
+          version: latest
+          command: decode
+          args: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U # gitleaks:allow
+
+      - name: Print decoded output
         id: output
-        run: echo "${{ steps.test-action.outputs.time }}"
+        run: echo "${{ steps.test-decode.outputs.output }}"

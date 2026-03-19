@@ -1,23 +1,48 @@
-name: The name of your action here
-description: Provide a description here
-author: Your name or organization here
+name: 'JWTop - JWT Operations Toolkit'
+description:
+  'Install and run jwtop for JWT decoding, verification, creation, signing,
+  cracking, and exploit testing'
+author: 'cerberauth'
 
-# Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: heart
-  color: red
+  icon: 'shield'
+  color: 'blue'
 
-# Define your inputs here.
 inputs:
-  milliseconds:
-    description: Your input description here
-    required: true
-    default: '1000'
+  token:
+    description:
+      'GitHub token used to fetch release information from the jwtop repository.'
+    required: false
+    default: ${{ github.token }}
+  version:
+    description:
+      'Version of jwtop to install (e.g. v0.2.0). Defaults to latest.'
+    required: false
+    default: 'latest'
+  command:
+    description:
+      'jwtop command to run (decode, verify, create, sign, crack, exploit). If
+      omitted, only installs jwtop.'
+    required: false
+    default: ''
+  args:
+    description:
+      'Arguments to pass to the jwtop command (e.g. "eyJ... --secret mysecret").'
+    required: false
+    default: ''
+  telemetry:
+    description:
+      'jwtop collects fully anonymized usage data to help improve the tool. You
+      can disable it by setting this to false.'
+    required: false
+    default: 'true'
 
-# Define your outputs here.
 outputs:
-  time:
-    description: Your output description here
+  output:
+    description:
+      'Stdout from the jwtop command (only set when command is provided).'
+  jwtop-path:
+    description: 'Directory where jwtop binary is located.'
 
 runs:
   using: node24
