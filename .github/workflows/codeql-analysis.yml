@@ -19,6 +19,3 @@ permissions:
 jobs:
   analyze:
     uses: cerberauth/ci/.github/workflows/typescript-codeql.yml@main
-    with:
-      config-file: .github/codeql/codeql-config.yml
-      source-root: src
