@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import { promises, existsSync, readFileSync } from 'fs';
 import * as path from 'path';
+import path__default from 'path';
 import * as http from 'http';
 import http__default from 'http';
 import * as https from 'https';
@@ -42,6 +43,7 @@ import require$$1$6 from 'node:dns';
 import 'string_decoder';
 import * as child from 'child_process';
 import { setTimeout as setTimeout$1 } from 'timers';
+import { readFile, rm as rm$1 } from 'fs/promises';
 import * as stream from 'stream';
 
 // We use any as a valid input type
@@ -41938,6 +41940,14 @@ function error(message, properties = {}) {
     issueCommand('error', toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 /**
+ * Adds a warning issue
+ * @param message warning issue message. Errors will be converted to string via toString()
+ * @param properties optional properties to add to the annotation.
+ */
+function warning(message, properties = {}) {
+    issueCommand('warning', toCommandProperties(properties), message instanceof Error ? message.toString() : message);
+}
+/**
  * Writes info to log with console.log.
  * @param message info message
  */
@@ -47769,7 +47779,7 @@ function getOctokitOptions(token, options) {
     return opts;
 }
 
-new Context();
+const context = new Context();
 /**
  * Returns a hydrated octokit ready to use for GitHub Actions
  *
@@ -47779,6 +47789,71 @@ new Context();
 function getOctokit(token, options, ...additionalPlugins) {
     const GitHubWithPlugins = GitHub.plugin(...additionalPlugins);
     return new GitHubWithPlugins(getOctokitOptions(token));
+}
+
+// Identifies the comment this action owns so it can be updated in place on
+// subsequent runs instead of piling up a new comment every push.
+const COMMENT_MARKER = '<!-- cerberauth/jwtop-action -->';
+// GitHub caps issue/PR comment bodies at 65536 characters.
+const MAX_COMMENT_LENGTH = 65536;
+function isPullRequestEvent() {
+    return ((context.eventName === 'pull_request' ||
+        context.eventName === 'pull_request_target') &&
+        context.payload.pull_request != null);
+}
+function buildCommentBody(output, format) {
+    const body = format === 'markdown' || format === 'md'
+        ? output
+        : '```' + format + '\n' + output + '\n```';
+    let comment = `${COMMENT_MARKER}\n${body}`;
+    if (comment.length > MAX_COMMENT_LENGTH) {
+        comment = `${comment.slice(0, MAX_COMMENT_LENGTH - 100)}\n\n_…output truncated…_`;
+    }
+    return comment;
+}
+// Creates or updates the PR comment carrying the scan results. Any failure
+// (most commonly a token without pull-requests/issues write access, e.g. on
+// forked-repo pull requests) is logged as a warning rather than failing the
+// action, since commenting is a best-effort convenience on top of the scan.
+async function postScanComment(token, body) {
+    const pullRequest = context.payload.pull_request;
+    if (!pullRequest) {
+        debug('Not running for a pull request, skipping comment');
+        return;
+    }
+    const { owner, repo } = context.repo;
+    const issue_number = pullRequest.number;
+    try {
+        const octokit = getOctokit(token);
+        const comments = await octokit.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number
+        });
+        const existing = comments.data.find((c) => c.body?.includes(COMMENT_MARKER));
+        if (existing) {
+            await octokit.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body
+            });
+            info(`Updated scan results comment on PR #${issue_number}`);
+        }
+        else {
+            await octokit.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body
+            });
+            info(`Created scan results comment on PR #${issue_number}`);
+        }
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warning(`Skipping PR comment (does the token have pull-requests: write permission?): ${message}`);
+    }
 }
 
 var re = {exports: {}};
@@ -51189,6 +51264,100 @@ async function extractArchive(archivePath) {
     return extPath;
 }
 
+// File extensions reportx's formatters use for each --format/--output-format
+// value, mirroring format.Formatter.FileExtension() in the reportx package.
+const FORMAT_EXTENSIONS = {
+    json: '.json',
+    yaml: '.yaml',
+    yml: '.yaml',
+    jsonl: '.jsonl',
+    sarif: '.sarif.json',
+    markdown: '.md',
+    md: '.md',
+    html: '.html',
+    terminal: '.txt',
+    text: '.txt',
+    plain: '.txt'
+};
+function hasFlag(args, flag) {
+    return args.some((a) => a === flag || a.startsWith(`${flag}=`));
+}
+function getFlagValue(args, flag) {
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === flag)
+            return args[i + 1];
+        if (args[i].startsWith(`${flag}=`))
+            return args[i].split('=')[1];
+    }
+    return undefined;
+}
+function parseFormatFlag(args) {
+    return getFlagValue(args, '--format');
+}
+function parseOutputFlags(args) {
+    return {
+        path: getFlagValue(args, '--output'),
+        format: getFlagValue(args, '--output-format')
+    };
+}
+function tempReportPath(format) {
+    const dir = process.env['RUNNER_TEMP'] || os__default.tmpdir();
+    const ext = FORMAT_EXTENSIONS[format] ?? '.txt';
+    return path__default.join(dir, `jwtop-report-${Date.now()}${ext}`);
+}
+// Turns action inputs for reportx's own CLI flags (see cobrax/reportx in
+// github.com/cerberauth/x) into jwtop CLI args, so users get first-class
+// access to reportx's output formats, HTTP transport, and display options
+// without hand-crafting the `args` input. Only meaningful for commands that
+// register those flags (currently `crack`); the caller is expected to only
+// call this for such commands. Existing flags already present in `args`
+// (i.e. already in commandArgs) are left untouched.
+function appendReportxFlags(commandArgs) {
+    const outputFormat = getInput('output-format');
+    const outputPath = getInput('output-path');
+    if (!hasFlag(commandArgs, '--output') && (outputFormat || outputPath)) {
+        const format = outputFormat || 'json';
+        commandArgs.push('--output', outputPath || tempReportPath(format), '--output-format', format);
+    }
+    const reportUrl = getInput('report-url');
+    if (!hasFlag(commandArgs, '--report-url') && reportUrl) {
+        commandArgs.push('--report-url', reportUrl);
+        const reportFormat = getInput('report-format');
+        if (reportFormat && !hasFlag(commandArgs, '--report-format')) {
+            commandArgs.push('--report-format', reportFormat);
+        }
+        const reportHeaders = getInput('report-headers');
+        for (const line of reportHeaders.split('\n')) {
+            const header = line.trim();
+            if (!header)
+                continue;
+            // Accepts "Key: Value" or "Key=Value", one per line.
+            const sepIndex = header.search(/[:=]/);
+            if (sepIndex === -1)
+                continue;
+            const key = header.slice(0, sepIndex).trim();
+            const value = header.slice(sepIndex + 1).trim();
+            if (!key || !value)
+                continue;
+            commandArgs.push('--report-header', `${key}=${value}`);
+        }
+    }
+    if (getInput('show-all-findings') === 'true' &&
+        !hasFlag(commandArgs, '--show-all-findings')) {
+        commandArgs.push('--show-all-findings');
+    }
+    if (getInput('no-color') === 'true' && !hasFlag(commandArgs, '--no-color')) {
+        commandArgs.push('--no-color');
+    }
+    if (getInput('quiet') === 'true' && !hasFlag(commandArgs, '--quiet')) {
+        commandArgs.push('--quiet');
+    }
+}
+
+// Commands that register reportx's flags (--format, --output, --report-url,
+// ...), currently only `crack`. The PR comment and the reportx passthrough
+// inputs (output-format, report-url, ...) only apply to these.
+const REPORTABLE_COMMANDS = new Set(['crack']);
 function parseArgs(args) {
     if (!args.trim())
         return [];
@@ -51211,6 +51380,43 @@ async function run() {
             if (telemetry === 'false' || telemetry === '0') {
                 extraArgs.push('--sqa-opt-out');
             }
+            const commandArgs = parseArgs(args);
+            const commentEnabled = getInput('comment') !== 'false';
+            const isReportable = REPORTABLE_COMMANDS.has(command);
+            const shouldComment = commentEnabled && isReportable && isPullRequestEvent();
+            // Give first-class access to reportx's own capabilities (output
+            // formats/files, HTTP transport, display flags) via dedicated inputs,
+            // on top of whatever the caller already passed through `args`.
+            if (isReportable) {
+                appendReportxFlags(commandArgs);
+            }
+            // Whatever --output the caller ended up with (via `args` or the
+            // output-format/output-path inputs above) is a deliberate, persistent
+            // request - surface it as an output so it can be uploaded as an
+            // artifact, fed to `github/codeql-action/upload-sarif`, etc.
+            const persistedOutput = parseOutputFlags(commandArgs);
+            // The terminal display (stdout, captured below as `output`) is left
+            // untouched so it keeps showing whatever the command would normally
+            // print. For the PR comment we want every finding - not just
+            // vulnerable ones - so a report file (which reportx always fills with
+            // every finding, unlike stdout) is used as the comment body instead.
+            // Reuse the persisted --output if it's already markdown; otherwise
+            // write one of our own to a temp file dedicated to the comment.
+            let reportFilePath;
+            let ownsReportFile = false;
+            if (shouldComment) {
+                if (persistedOutput.path) {
+                    if (persistedOutput.format === 'markdown' ||
+                        persistedOutput.format === 'md') {
+                        reportFilePath = persistedOutput.path;
+                    }
+                }
+                else {
+                    reportFilePath = tempReportPath('markdown');
+                    ownsReportFile = true;
+                    commandArgs.push('--output', reportFilePath, '--output-format', 'markdown');
+                }
+            }
             let output = '';
             const execOptions = {
                 listeners: {
@@ -51220,8 +51426,39 @@ async function run() {
                 }
             };
             debug(`Running jwtop ${command} with args: ${args}`);
-            await exec('jwtop', [command, ...parseArgs(args), ...extraArgs], execOptions);
-            setOutput('output', output.trim());
+            await exec('jwtop', [command, ...commandArgs, ...extraArgs], execOptions);
+            output = output.trim();
+            setOutput('output', output);
+            if (persistedOutput.path) {
+                setOutput('report-path', persistedOutput.path);
+            }
+            if (shouldComment) {
+                let commentBody;
+                let commentFormat = 'markdown';
+                if (reportFilePath) {
+                    try {
+                        commentBody = await readFile(reportFilePath, 'utf8');
+                    }
+                    catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        warning(`Could not read jwtop report for PR comment: ${message}`);
+                    }
+                    finally {
+                        if (ownsReportFile) {
+                            await rm$1(reportFilePath, { force: true }).catch(() => { });
+                        }
+                    }
+                }
+                else {
+                    // The report file is in a non-markdown format; fall back to
+                    // whatever the command printed to stdout instead.
+                    commentBody = output;
+                    commentFormat = parseFormatFlag(commandArgs) ?? 'terminal';
+                }
+                if (commentBody) {
+                    await postScanComment(getToken(), buildCommentBody(commentBody, commentFormat));
+                }
+            }
         }
     }
     catch (error) {

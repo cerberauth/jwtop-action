@@ -38,18 +38,28 @@ steps:
 
 ## Inputs
 
-| Input     | Description                                                                                                                                 | Required | Default  |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------- |
-| `version` | Version of jwtop to install (e.g. `v0.2.0`). Use `latest` to always install the newest.                                                     | No       | `latest` |
-| `command` | jwtop subcommand to run: `decode`, `verify`, `create`, `sign`, `crack`, `exploit`. If omitted, jwtop is only installed and added to `PATH`. | No       |          |
-| `args`    | Arguments and flags to pass to the jwtop command.                                                                                           | No       |          |
+| Input               | Description                                                                                                                                                                                            | Required | Default  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | -------- |
+| `version`           | Version of jwtop to install (e.g. `v0.2.0`). Use `latest` to always install the newest.                                                                                                                | No       | `latest` |
+| `command`           | jwtop subcommand to run: `decode`, `verify`, `create`, `sign`, `crack`, `exploit`. If omitted, jwtop is only installed and added to `PATH`.                                                            | No       |          |
+| `args`              | Arguments and flags to pass to the jwtop command.                                                                                                                                                      | No       |          |
+| `comment`           | For pull request runs of a command that supports it (currently `crack`), post/update a PR comment with the scan results. Requires the token to have `pull-requests: write` permission.                 | No       | `true`   |
+| `output-format`     | For commands that support it (currently `crack`), write the full report to a file in `json`, `yaml`, `jsonl`, `sarif`, `markdown`, `html`, or `terminal`. Path is exposed as the `report-path` output. | No       |          |
+| `output-path`       | File path for `output-format`. Defaults to a generated path under `RUNNER_TEMP`.                                                                                                                       | No       |          |
+| `report-url`        | For commands that support it (currently `crack`), HTTP endpoint to POST the full report to.                                                                                                            | No       |          |
+| `report-format`     | Format for `report-url`: `json`, `yaml`, `jsonl`, `sarif`, `markdown`, `html`.                                                                                                                         | No       |          |
+| `report-headers`    | Extra HTTP headers for `report-url`, one `Key: Value` (or `Key=Value`) pair per line.                                                                                                                  | No       |          |
+| `show-all-findings` | For commands that support it (currently `crack`), show every finding on the terminal, not just vulnerable ones. Files/`report-url` always get every finding regardless.                                | No       | `false`  |
+| `no-color`          | Disable ANSI colors in terminal output.                                                                                                                                                                | No       | `false`  |
+| `quiet`             | Suppress terminal display of the report.                                                                                                                                                               | No       | `false`  |
 
 ## Outputs
 
-| Output       | Description                                                          |
-| ------------ | -------------------------------------------------------------------- |
-| `output`     | Stdout from the jwtop command (only set when `command` is provided). |
-| `jwtop-path` | Directory where the jwtop binary is located.                         |
+| Output        | Description                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `output`      | Stdout from the jwtop command (only set when `command` is provided).                      |
+| `report-path` | Path to the full report file, when `output-format`/`output-path` was set (or via `args`). |
+| `jwtop-path`  | Directory where the jwtop binary is located.                                              |
 
 ## Commands
 
@@ -80,6 +90,64 @@ steps:
   with:
     command: verify
     args: '${{ env.JWT_TOKEN }} --key ./public.pem'
+```
+
+### Comment scan results on a pull request
+
+When the workflow is triggered by a pull request and `command: crack` is used,
+the action posts (or updates, on subsequent pushes) a PR comment with the full
+scan report, formatted as markdown — every finding, including checks that
+passed, not just vulnerable ones. The terminal log keeps showing the usual
+summary of vulnerable findings. This requires the token to have
+`pull-requests: write` permission; without it, the step logs a warning and
+continues rather than failing the run.
+
+```yaml
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  jwt-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: cerberauth/jwtop-action@v1
+        with:
+          command: crack
+          args:
+            '--url https://api.example.com/protected --wordlist ./wordlist.txt'
+```
+
+Set `comment: false` to disable this behavior.
+
+### Upload a SARIF report to code scanning
+
+```yaml
+- uses: cerberauth/jwtop-action@v1
+  id: crack
+  with:
+    command: crack
+    args: --url https://api.example.com/protected --wordlist ./wordlist.txt
+    output-format: sarif
+
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: ${{ steps.crack.outputs.report-path }}
+```
+
+### Send the report to an external endpoint
+
+```yaml
+- uses: cerberauth/jwtop-action@v1
+  with:
+    command: crack
+    args: --url https://api.example.com/protected --wordlist ./wordlist.txt
+    report-url: https://reports.example.com/ingest
+    report-format: json
+    report-headers: |
+      Authorization: Bearer ${{ secrets.REPORTS_TOKEN }}
 ```
 
 ### Pin a specific version

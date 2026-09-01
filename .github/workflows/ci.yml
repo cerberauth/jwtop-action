@@ -46,3 +46,65 @@ jobs:
       - name: Print decoded output
         id: output
         run: echo "${{ steps.test-decode.outputs.output }}"
+
+  test-action-reports:
+    name: GitHub Actions Test (report ${{ matrix.format }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [json, yaml, jsonl, sarif, markdown, html, terminal]
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: Crack a JWT offline and write a ${{ matrix.format }} report
+        id: test-crack
+        uses: ./
+        with:
+          version: latest
+          command: crack
+          args:
+            eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
+            --secret mysecret # gitleaks:allow
+          output-format: ${{ matrix.format }}
+          comment: false
+
+      - name: Verify report file was written
+        id: verify
+        run: test -s "${{ steps.test-crack.outputs.report-path }}"
+
+      - name: Upload report as an artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: jwtop-crack-report-${{ matrix.format }}
+          path: ${{ steps.test-crack.outputs.report-path }}
+
+  test-action-comment:
+    name: GitHub Actions Test (PR comment)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: Crack a JWT and comment the report on this PR
+        id: test-crack-comment
+        uses: ./
+        with:
+          version: latest
+          command: crack
+          args:
+            eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
+            --secret mysecret # gitleaks:allow

@@ -48,7 +48,7 @@ export async function installVersion(version: string) {
   return cachedDir
 }
 
-function getToken(): string {
+export function getToken(): string {
   const token = getInput('token') || process.env.GITHUB_TOKEN
   if (!token) {
     throw new Error(
