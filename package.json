@@ -43,7 +43,8 @@
     "@actions/core": "3.0.1",
     "@actions/exec": "3.0.0",
     "@actions/github": "9.1.1",
-    "@actions/tool-cache": "4.0.0"
+    "@actions/tool-cache": "4.0.0",
+    "@cerberauth/gha-reportx": "0.0.0"
   },
   "devDependencies": {
     "@eslint/compat": "2.1.0",
