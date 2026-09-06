@@ -4,11 +4,29 @@ import {
   getInput,
   info,
   setFailed,
-  setOutput
+  setOutput,
+  warning
 } from '@actions/core'
 import { exec, ExecOptions } from '@actions/exec'
+import { rm, readFile } from 'fs/promises'
 
-import { installVersion } from './installer.js'
+import {
+  appendReportxFlags,
+  buildCommentBody,
+  isPullRequestEvent,
+  parseOutputFlags,
+  postScanComment,
+  tempReportPath
+} from '@cerberauth/gha-reportx'
+
+import { getToken, installVersion } from './installer.js'
+
+const JWTOP_DOCS_URL = 'https://www.cerberauth.com/docs/jwtop/'
+
+// Commands that register reportx's flags (--format, --output, --report-url,
+// ...), currently only `crack`. The PR comment and the reportx passthrough
+// inputs (output-format, report-url, ...) only apply to these.
+const REPORTABLE_COMMANDS = new Set(['crack'])
 
 function parseArgs(args: string): string[] {
   if (!args.trim()) return []
@@ -37,6 +55,50 @@ export async function run(): Promise<void> {
         extraArgs.push('--sqa-opt-out')
       }
 
+      const commandArgs = parseArgs(args)
+      const commentEnabled = getInput('comment') !== 'false'
+      const isReportable = REPORTABLE_COMMANDS.has(command)
+      const shouldComment =
+        commentEnabled && isReportable && isPullRequestEvent()
+
+      // Give first-class access to reportx's own capabilities (output
+      // formats/files, HTTP transport, display flags) via dedicated inputs,
+      // on top of whatever the caller already passed through `args`.
+      if (isReportable) {
+        appendReportxFlags(commandArgs)
+      }
+
+      // Whatever --output the caller ended up with (via `args` or the
+      // output-format/output-path inputs above) is a deliberate, persistent
+      // request - surface it as an output so it can be uploaded as an
+      // artifact, fed to `github/codeql-action/upload-sarif`, etc.
+      const persistedOutput = parseOutputFlags(commandArgs)
+
+      // The terminal display (stdout, captured below as `output`) is left
+      // untouched so it keeps showing whatever the command would normally
+      // print. For the PR comment we want every finding - not just
+      // vulnerable ones - and structured data to summarize (severity, URL,
+      // ...), so a JSON report file (which reportx always fills with every
+      // finding, unlike stdout) is read for the comment instead. Reuse the
+      // persisted --output if it's already JSON; otherwise write one of our
+      // own to a temp file dedicated to the comment.
+      let reportFilePath: string | undefined
+      let ownsReportFile = false
+      if (shouldComment) {
+        if (persistedOutput.path && persistedOutput.format === 'json') {
+          reportFilePath = persistedOutput.path
+        } else if (!persistedOutput.path) {
+          reportFilePath = tempReportPath('json')
+          ownsReportFile = true
+          commandArgs.push(
+            '--output',
+            reportFilePath,
+            '--output-format',
+            'json'
+          )
+        }
+      }
+
       let output = ''
       const execOptions: ExecOptions = {
         listeners: {
@@ -47,12 +109,43 @@ export async function run(): Promise<void> {
       }
 
       debug(`Running jwtop ${command} with args: ${args}`)
-      await exec(
-        'jwtop',
-        [command, ...parseArgs(args), ...extraArgs],
-        execOptions
-      )
-      setOutput('output', output.trim())
+      await exec('jwtop', [command, ...commandArgs, ...extraArgs], execOptions)
+      output = output.trim()
+      setOutput('output', output)
+
+      if (persistedOutput.path) {
+        setOutput('report-path', persistedOutput.path)
+      }
+
+      if (shouldComment && reportFilePath) {
+        let reportJson: string | undefined
+        try {
+          reportJson = await readFile(reportFilePath, 'utf8')
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          warning(`Could not read jwtop report for PR comment: ${message}`)
+        } finally {
+          if (ownsReportFile) {
+            await rm(reportFilePath, { force: true }).catch(() => {})
+          }
+        }
+
+        if (reportJson) {
+          try {
+            await postScanComment(
+              getToken(),
+              buildCommentBody(reportJson, {
+                toolName: 'jwtop',
+                docsUrl: JWTOP_DOCS_URL
+              })
+            )
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error)
+            warning(`Could not build PR comment from jwtop report: ${message}`)
+          }
+        }
+      }
     }
   } catch (error) {
     if (error instanceof Error) {
