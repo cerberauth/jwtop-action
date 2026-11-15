@@ -22,7 +22,9 @@ inputs:
   command:
     description:
       'jwtop command to run (decode, verify, create, sign, crack, exploit). If
-      omitted, only installs jwtop.'
+      omitted, only installs jwtop. The step fails when the command exits
+      non-zero, except for crack, which acts as a security gate: the step fails
+      when the token is vulnerable and passes when no vulnerability is found.'
     required: false
     default: ''
   args:
@@ -36,11 +38,79 @@ inputs:
       can disable it by setting this to false.'
     required: false
     default: 'true'
+  comment:
+    description:
+      'When the workflow runs for a pull request and the command supports it
+      (currently `crack`), post (or update) a PR comment listing the
+      vulnerabilities found, while the terminal log keeps showing the usual
+      summary. Requires the token to have pull-requests: write permission; if it
+      does not, a warning is logged instead. Set to false to disable.'
+    required: false
+    default: 'true'
+  scan-id:
+    description:
+      'Distinguishes the PR comments of several crack runs on the same pull
+      request (e.g. one per token or matrix job), so each keeps its own comment
+      instead of overwriting the others.'
+    required: false
+    default: ''
+  output-format:
+    description:
+      'For commands that support it (currently `crack`), write the full report
+      to a file in this format: json, yaml, jsonl, sarif, markdown, html, or
+      terminal. The file path is exposed as the report-path output (e.g. to
+      upload as a workflow artifact or feed sarif to
+      github/codeql-action/upload-sarif). Has no effect if `args` already sets
+      --output.'
+    required: false
+    default: ''
+  output-path:
+    description:
+      'File path for output-format. Defaults to a generated path under
+      RUNNER_TEMP.'
+    required: false
+    default: ''
+  report-url:
+    description:
+      'For commands that support it (currently `crack`), HTTP endpoint to POST
+      the full report to. Has no effect if `args` already sets --report-url.'
+    required: false
+    default: ''
+  report-format:
+    description:
+      'Format for report-url: json, yaml, jsonl, sarif, markdown, html.'
+    required: false
+    default: ''
+  report-headers:
+    description:
+      'Extra HTTP headers for report-url, one "Key: Value" (or "Key=Value") pair
+      per line, e.g. for an authorization token.'
+    required: false
+    default: ''
+  show-all-findings:
+    description:
+      'For commands that support it (currently `crack`), show every finding on
+      the terminal, not just vulnerable ones (files/report-url always get every
+      finding regardless of this).'
+    required: false
+    default: 'false'
+  no-color:
+    description: 'Disable ANSI colors in terminal output.'
+    required: false
+    default: 'false'
+  quiet:
+    description: 'Suppress terminal display of the report.'
+    required: false
+    default: 'false'
 
 outputs:
   output:
     description:
       'Stdout from the jwtop command (only set when command is provided).'
+  report-path:
+    description:
+      'Path to the full report file, when output-format/output-path was set
+      (directly or via `args`).'
   jwtop-path:
     description: 'Directory where jwtop binary is located.'
 
